@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 
-export type QuizType = "mcq" | "tf" | "fib";
+export type QuizType = "mcq" | "tf" | "fib" | "mix";
 
 export async function generateQuizQuestionsOpenAI(
   text: string,
@@ -13,51 +13,74 @@ export async function generateQuizQuestionsOpenAI(
     baseURL: "https://api.groq.com/openai/v1",
   });
 
-  // Strict Instructions based on type
-  let systemPrompt = "You are a strict exam creator. Output valid JSON only.";
-  let userPrompt = `Create a quiz with ${count} questions based on the text below.`;
-
-  if (type === "mcq") {
-    userPrompt += "\nType: Multiple Choice. Provide 4 distinct options.";
+  // ⚡ STRICT INSTRUCTIONS
+  let instructions = "";
+  if (type === "mix") {
+    instructions = `
+      STRICTLY ALTERNATE QUESTION TYPES:
+      1. Multiple Choice (MCQ)
+      2. True/False (TF)
+      3. Fill-in-the-Blank (FIB)
+      ...repeat pattern.
+    `;
+  } else if (type === "mcq") {
+    instructions = "ALL questions must be Multiple Choice (MCQ).";
   } else if (type === "tf") {
-    userPrompt +=
-      "\nType: True/False. The 'options' array MUST be exactly ['True', 'False'].";
+    instructions =
+      "ALL questions must be True/False (TF). Options: ['True', 'False'].";
   } else if (type === "fib") {
-    userPrompt +=
-      "\nType: Fill-in-the-Blank. The 'question' must contain '______' representing the missing word. The 'options' array must be EMPTY []. The 'answer' must be the single missing word.";
+    instructions =
+      "ALL questions must be Fill-in-the-Blank (FIB). Question text MUST include '______'. Options: [].";
   }
 
-  userPrompt += `
-    \nJSON Schema:
+  const prompt = `
+    Create a quiz with ${count} questions based on the text below.
+    ${instructions}
+
+    RETURN VALID JSON ONLY. NO MARKDOWN.
+    
+    Schema:
     {
       "questions": [
         {
-          "question": "Question text",
-          "options": ["Option A", "Option B"] (or [] for FIB),
-          "answer": "Correct Answer",
-          "explanation": "Why this is correct"
+          "question": "The question text",
+          "options": ["A", "B", "C", "D"] (Or ["True", "False"], or [] for FIB),
+          "answer": "The exact correct string",
+          "explanation": "Why the answer is correct",
+          "type": "mcq" | "tf" | "fib"
         }
       ]
     }
-    
-    TEXT CONTENT:
+
+    TEXT:
     ${text.substring(0, 15000)}
   `;
 
   try {
     const completion = await groq.chat.completions.create({
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "system", content: "You are a JSON-only API." },
+        { role: "user", content: prompt },
       ],
       model: "llama-3.1-8b-instant",
       response_format: { type: "json_object" },
-      temperature: 0.3, // Lower temperature = stricter adherence to format
+      temperature: 0.3,
     });
 
-    return JSON.parse(completion.choices[0].message.content!).questions;
+    const parsed = JSON.parse(completion.choices[0].message.content!);
+
+    // 🛡️ DATA SANITIZATION
+    return parsed.questions.map((q: any) => ({
+      ...q,
+      type: q.type.toLowerCase(),
+      // Ensure options exist for MCQ/TF, and are empty for FIB
+      options:
+        q.type.toLowerCase() === "fib" ? [] : q.options || ["True", "False"],
+      // Ensure FIB answer is trimmed
+      answer: q.answer.trim(),
+    }));
   } catch (error) {
     console.error("Groq Error:", error);
-    throw new Error("Failed to generate quiz. Check API Key or Text content.");
+    throw new Error("Failed to generate quiz. Try again.");
   }
 }
