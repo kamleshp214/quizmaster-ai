@@ -16,30 +16,44 @@ export interface QuizResponse {
 }
 
 export async function generateQuizQuestionsOpenAI(
-  text: string,
-  apiKey: string,
-  count: number = 5,
+  text: string, 
+  apiKey: string, 
+  count: number = 5, 
   type: QuizType = "mcq",
-  difficulty: Difficulty = "normal",
+  difficulty: Difficulty = "normal"
 ): Promise<QuizResponse> {
   const groq = new OpenAI({
     apiKey: apiKey,
     baseURL: "https://api.groq.com/openai/v1",
-    dangerouslyAllowBrowser: true, // Only if running client-side, but we are server-side
+    dangerouslyAllowBrowser: true 
   });
+
+  // Dynamic Prompt Construction based on User Selection
+  let formatRules = "";
+  if (type === "mcq") {
+    formatRules = `- Strictly generate Multiple Choice Questions (MCQ).
+    - Provide exactly 4 options per question.`;
+  } else if (type === "tf") {
+    formatRules = `- Strictly generate True/False questions.
+    - Options MUST be exactly: ["True", "False"].`;
+  } else if (type === "fib") {
+    formatRules = `- Strictly generate Fill-in-the-Blank (FIB) questions.
+    - Options MUST be an empty array [].`;
+  } else {
+    formatRules = `- Generate a mix of MCQ, True/False, and Fill-in-the-Blank questions.`;
+  }
 
   const prompt = `
     Role: System API.
-    Task: Convert text into a strict JSON quiz.
-    Count: ${count} questions.
-    Difficulty: ${difficulty}.
+    Task: Create a ${difficulty} level quiz based on the text below.
+    Format: JSON.
+    Question Count: ${count}.
     
-    Structure Requirement:
-    - If type is "mix", alternate: MCQ, TF, FIB.
-    - If type is "fib", "options" must be empty [].
-    - "simple_explanation" must be a simplified version of the "explanation".
-    
-    CRITICAL: Output PURE JSON only. Do not wrap in markdown blocks. Do not add conversational text.
+    STRICT FORMATTING RULES:
+    ${formatRules}
+    - "answer" must be the exact string value from the options (or the correct text for FIB).
+    - "simple_explanation" must be a simplified, child-friendly version of the academic "explanation".
+    - Do NOT include conversational text. Output ONLY the JSON object.
 
     JSON Schema:
     {
@@ -47,71 +61,58 @@ export async function generateQuizQuestionsOpenAI(
       "questions": [
         {
           "question": "Question text",
-          "options": ["A", "B", "C", "D"],
+          "options": ["Option A", "Option B", ...], 
           "answer": "Correct Answer",
-          "explanation": "Academic explanation",
-          "simple_explanation": "Child-friendly explanation",
-          "type": "mcq"
+          "explanation": "Detailed academic explanation",
+          "simple_explanation": "Simple ELI5 explanation",
+          "type": "${type === 'mix' ? 'mcq OR tf OR fib' : type}"
         }
       ]
     }
 
-    TEXT CONTENT:
+    CONTENT TO ANALYZE:
     ${text.substring(0, 25000)}
   `;
 
   try {
     const completion = await groq.chat.completions.create({
       messages: [
-        {
-          role: "system",
-          content: "You are a backend processor. Return only raw JSON.",
-        },
-        { role: "user", content: prompt },
+        { role: "system", content: "You are a backend JSON API. Return only valid JSON." },
+        { role: "user", content: prompt }
       ],
       model: "llama-3.1-8b-instant",
-      temperature: 0.2, // Lower temp = more stable JSON
+      temperature: 0.3, // Slightly higher for creativity in questions, but logic is constrained by prompt
     });
 
     let raw = completion.choices[0].message.content || "";
 
     // 🧹 SANITIZER: Robust JSON Extraction
-    // 1. Remove Markdown code blocks
     raw = raw.replace(/```json/g, "").replace(/```/g, "");
-
-    // 2. Find the first '{' and last '}'
     const firstBrace = raw.indexOf("{");
     const lastBrace = raw.lastIndexOf("}");
-
+    
     if (firstBrace !== -1 && lastBrace !== -1) {
       raw = raw.substring(firstBrace, lastBrace + 1);
-    } else {
-      throw new Error("No JSON object found in response");
     }
 
-    // 3. Parse
     const parsed = JSON.parse(raw);
-
-    // 4. Validate & Normalize
+    
+    // 🛡️ Data Normalization Guard
     return {
       subject: parsed.subject || "General Knowledge",
       questions: parsed.questions.map((q: any) => ({
-        ...q,
-        type: q.type.toLowerCase(),
-        // Fallback if simple_explanation is missing
-        simple_explanation: q.simple_explanation || q.explanation,
-        // Ensure options exist for MCQ/TF
-        options:
-          q.type.toLowerCase() === "fib" ? [] : q.options || ["True", "False"],
-        // Stringify answer just in case
+        question: q.question,
+        // Enforce True/False options if the type is TF, regardless of what AI generated
+        options: q.type === 'tf' || type === 'tf' ? ["True", "False"] : (q.options || []),
         answer: q.answer.toString().trim(),
-      })),
+        explanation: q.explanation || "No explanation provided.",
+        simple_explanation: q.simple_explanation || q.explanation,
+        type: (type === 'mix' ? q.type : type).toLowerCase()
+      }))
     };
+
   } catch (error) {
     console.error("Groq Generation Error:", error);
-    // Return a fallback error that the UI can handle gracefully
-    throw new Error(
-      "Failed to generate quiz. The content might be too complex or the AI is busy. Please try again.",
-    );
+    throw new Error("Failed to generate quiz. The content might be too complex or the AI is busy. Please try again.");
   }
 }
