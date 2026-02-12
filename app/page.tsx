@@ -1,12 +1,11 @@
 "use client";
 
 /**
- * QUIZMASTER ONYX v12.0
+ * QUIZMASTER ONYX v13.0
  * -----------------------------------
- * - Fixed Selection State visual bugs
- * - Added Scrollable Container for Flashcards
- * - Refined Mobile Touch Areas
- * - Optimized Audio Context handling
+ * - Added Zero-Shot Topic Generation Tab
+ * - Preserved Telemetry, Audio, and Safety Engines
+ * - Multi-modal payload handling (PDF, YT, Topic)
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -48,6 +47,7 @@ import {
   AlertTriangle,
   Timer,
   Info,
+  Brain,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Slider } from "@/components/ui/slider";
@@ -132,6 +132,14 @@ const playSound = (
     gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
     osc.start(now);
     osc.stop(now + 0.15);
+  } else if (type === "warning") {
+    osc.type = "square";
+    osc.frequency.setValueAtTime(200, now);
+    osc.frequency.linearRampToValueAtTime(150, now + 0.2);
+    gain.gain.setValueAtTime(0.1, now);
+    gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
+    osc.start(now);
+    osc.stop(now + 0.2);
   } else if (type === "flip") {
     osc.type = "sine";
     osc.frequency.setValueAtTime(200, now);
@@ -191,6 +199,7 @@ export default function Home() {
   const [difficulty, setDifficulty] = useState<string>("normal");
   const [questionCount, setQuestionCount] = useState([5]);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [topicInput, setTopicInput] = useState(""); // NEW: Topic Generation State
   const [isMockMode, setIsMockMode] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
 
@@ -226,6 +235,61 @@ export default function Home() {
     if (storedKey) setApiKey(storedKey);
   }, []);
 
+  // --- KEYBOARD LISTENERS ---
+
+  // Quiz Keyboard Shortcuts
+  useEffect(() => {
+    if (view === "QUIZ" && !isAnswered && !showExitConfirm) {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        const q = questions[currentQ];
+        if (q?.type === "mcq" || q?.type === "tf") {
+          const index = parseInt(e.key) - 1;
+          if (!isNaN(index) && index >= 0 && index < q.options.length) {
+            handleOptionSelect(q.options[index]);
+          }
+        }
+        if (e.key === "Enter" && q?.type === "fib" && textAnswer)
+          submitAnswer(textAnswer);
+      };
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+    } else if (view === "QUIZ" && isAnswered && !showExitConfirm) {
+      const handleNext = (e: KeyboardEvent) => {
+        if (e.key === "Enter") nextQuestion();
+      };
+      window.addEventListener("keydown", handleNext);
+      return () => window.removeEventListener("keydown", handleNext);
+    }
+  }, [view, isAnswered, currentQ, textAnswer, questions, showExitConfirm]);
+
+  // Flashcard Keyboard Shortcuts
+  useEffect(() => {
+    if (view === "FLASHCARDS") {
+      const handleFlashcardKeys = (e: KeyboardEvent) => {
+        if (e.key === "ArrowRight") {
+          setIsFlipped(false);
+          if (currentQ < questions.length - 1) setCurrentQ((c) => c + 1);
+          else setView("RESULTS");
+        }
+        if (e.key === "ArrowLeft") {
+          setIsFlipped(false);
+          if (currentQ > 0) setCurrentQ((c) => c - 1);
+        }
+        if (e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          triggerFeedback("flip");
+          setIsFlipped((f) => !f);
+        }
+        if (e.key === "Escape") {
+          triggerFeedback("click");
+          setView("RESULTS");
+        }
+      };
+      window.addEventListener("keydown", handleFlashcardKeys);
+      return () => window.removeEventListener("keydown", handleFlashcardKeys);
+    }
+  }, [view, currentQ, questions.length]);
+
   // Timer
   useEffect(() => {
     if (view === "QUIZ" && isMockMode && timeLeft > 0 && !showExitConfirm) {
@@ -256,11 +320,12 @@ export default function Home() {
     localStorage.setItem("groq_api_key", apiKey);
 
     setIsLoading(true);
-    setLoadingStep("Reading Content...");
+    setLoadingStep("Connecting to AI...");
 
     const formData = new FormData();
     if (file) formData.append("file", file);
-    if (youtubeUrl) formData.append("youtubeUrl", youtubeUrl);
+    else if (youtubeUrl) formData.append("youtubeUrl", youtubeUrl);
+    else if (topicInput) formData.append("topic", topicInput); // NEW: Topic injection
 
     formData.append("apiKey", apiKey);
     formData.append("quizType", quizType);
@@ -268,8 +333,8 @@ export default function Home() {
     formData.append("amount", questionCount[0].toString());
 
     try {
-      setTimeout(() => setLoadingStep("Deep Learning Scan..."), 1500);
-      setTimeout(() => setLoadingStep("Generating Assessment..."), 3000);
+      setTimeout(() => setLoadingStep("Structuring Knowledge..."), 1500);
+      setTimeout(() => setLoadingStep("Finalizing Assessment..."), 3000);
 
       const res = await fetch("/api/quiz/generate", {
         method: "POST",
@@ -280,7 +345,7 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || "Generation failed");
 
       setQuestions(data.questions);
-      setSubject(data.subject || "Session");
+      setSubject(data.subject || topicInput || "Session");
       setHistory(new Array(data.questions.length).fill(null));
 
       setTimeout(() => {
@@ -330,16 +395,14 @@ export default function Home() {
   };
 
   const handleOptionSelect = (option: string) => {
-    if (isAnswered && !isMockMode) return; // Prevent changing in normal mode after answered
+    if (isAnswered && !isMockMode) return;
 
     triggerFeedback("click");
     setSelectedOption(option);
 
-    // In Normal Mode -> Submit Immediately
     if (!isMockMode) {
       submitAnswer(option);
     }
-    // In Mock Mode -> Just highlight, wait for manual submit
   };
 
   const submitAnswer = (finalAnswer: string | null) => {
@@ -504,7 +567,7 @@ export default function Home() {
           <motion.div
             animate={{ scale: [1, 1.1, 1], rotate: 360 }}
             transition={{ duration: 3, ease: "easeInOut", repeat: Infinity }}
-            className="w-16 h-16 border-4 border-zinc-100 border-t-black rounded-full mb-8 shadow-xl"
+            className="w-20 h-20 border-4 border-zinc-100 border-t-black rounded-full mb-8 shadow-xl"
           />
           <h2 className="text-xl font-black tracking-tighter text-black uppercase animate-pulse">
             {loadingStep}
@@ -537,9 +600,9 @@ export default function Home() {
                 Brain.
               </h1>
               <p className="text-base md:text-lg font-medium text-zinc-500 max-w-xs leading-relaxed">
-                Upload documents. Get grilled by AI. <br />
+                Upload documents, paste links, or{" "}
                 <span className="text-black font-bold">
-                  Simple. Fast. Brutal.
+                  generate from raw topics.
                 </span>
               </p>
             </div>
@@ -670,19 +733,26 @@ export default function Home() {
                   />
                 </div>
 
+                {/* NEW TAB STRUCTURE */}
                 <Tabs defaultValue="pdf" className="w-full">
-                  <TabsList className="w-full bg-zinc-100 p-1 rounded-xl h-12 mb-4">
+                  <TabsList className="w-full bg-zinc-100 p-1 rounded-xl h-12 mb-4 grid grid-cols-3">
                     <TabsTrigger
                       value="pdf"
-                      className="flex-1 rounded-lg text-[10px] md:text-xs font-bold uppercase h-10 data-[state=active]:bg-black data-[state=active]:text-white transition-all"
+                      className="rounded-lg text-[10px] md:text-xs font-bold uppercase h-10 data-[state=active]:bg-black data-[state=active]:text-white transition-all"
                     >
-                      Document
+                      PDF
                     </TabsTrigger>
                     <TabsTrigger
                       value="youtube"
-                      className="flex-1 rounded-lg text-[10px] md:text-xs font-bold uppercase h-10 data-[state=active]:bg-black data-[state=active]:text-white transition-all"
+                      className="rounded-lg text-[10px] md:text-xs font-bold uppercase h-10 data-[state=active]:bg-black data-[state=active]:text-white transition-all"
                     >
                       YouTube
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="topic"
+                      className="rounded-lg text-[10px] md:text-xs font-bold uppercase h-10 data-[state=active]:bg-black data-[state=active]:text-white transition-all"
+                    >
+                      Topic
                     </TabsTrigger>
                   </TabsList>
 
@@ -699,7 +769,7 @@ export default function Home() {
                         className="text-zinc-400 group-hover:text-black transition-colors"
                       />
                       <span className="text-[10px] font-bold uppercase tracking-wide text-zinc-500 group-hover:text-black">
-                        Upload PDF
+                        Upload Document
                       </span>
                     </div>
                   </TabsContent>
@@ -707,7 +777,7 @@ export default function Home() {
                   <TabsContent value="youtube" className="mt-0 flex gap-2">
                     <div className="relative flex-1">
                       <Input
-                        placeholder="YouTube URL..."
+                        placeholder="Paste YouTube Link..."
                         value={youtubeUrl}
                         onChange={(e) => setYoutubeUrl(e.target.value)}
                         className="h-14 rounded-xl bg-zinc-50 border-0 pl-10 font-medium text-sm"
@@ -720,6 +790,28 @@ export default function Home() {
                     <Button
                       onClick={() => handleStart()}
                       disabled={!youtubeUrl}
+                      className="h-14 w-14 rounded-xl bg-black text-white hover:scale-105 transition-transform"
+                    >
+                      <ArrowRight />
+                    </Button>
+                  </TabsContent>
+
+                  <TabsContent value="topic" className="mt-0 flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        placeholder="e.g. World War 2, React.js..."
+                        value={topicInput}
+                        onChange={(e) => setTopicInput(e.target.value)}
+                        className="h-14 rounded-xl bg-zinc-50 border-0 pl-10 font-medium text-sm"
+                      />
+                      <Brain
+                        className="absolute left-3 top-4 text-zinc-400"
+                        size={20}
+                      />
+                    </div>
+                    <Button
+                      onClick={() => handleStart()}
+                      disabled={!topicInput}
                       className="h-14 w-14 rounded-xl bg-black text-white hover:scale-105 transition-transform"
                     >
                       <ArrowRight />
@@ -865,7 +957,7 @@ export default function Home() {
                   <button
                     key={i}
                     onClick={() => handleOptionSelect(opt)}
-                    disabled={isAnswered && !isMockMode} // Disabled only if answered AND Normal Mode
+                    disabled={isAnswered && !isMockMode}
                     className={`w-full text-left p-5 rounded-2xl text-base md:text-lg font-bold border-2 transition-all active:scale-[0.98] duration-200 group ${
                       isAnswered && !isMockMode
                         ? opt === q.answer
@@ -888,7 +980,7 @@ export default function Home() {
                                 ? "bg-red-100 border-red-500 text-red-500"
                                 : "bg-zinc-100 border-zinc-200 text-zinc-400"
                             : selectedOption === opt
-                              ? "bg-white text-black"
+                              ? "bg-white text-black border-white"
                               : "bg-zinc-50 border-zinc-200 text-zinc-400 group-hover:bg-black group-hover:text-white group-hover:border-black"
                         }`}
                       >
