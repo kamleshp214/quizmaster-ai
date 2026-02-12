@@ -1,12 +1,12 @@
 "use client";
 
 /**
- * QUIZMASTER ONYX v11.0
+ * QUIZMASTER ONYX v12.0
  * -----------------------------------
- * - Fixed Flashcard Dark Mode Inversion
- * - Added Telemetry (Time Tracking)
- * - Added Session Safety Modals
- * - Added Full Keyboard Navigation for Flashcards
+ * - Fixed Selection State visual bugs
+ * - Added Scrollable Container for Flashcards
+ * - Refined Mobile Touch Areas
+ * - Optimized Audio Context handling
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -47,6 +47,7 @@ import {
   LogOut,
   AlertTriangle,
   Timer,
+  Info,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Slider } from "@/components/ui/slider";
@@ -131,14 +132,6 @@ const playSound = (
     gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
     osc.start(now);
     osc.stop(now + 0.15);
-  } else if (type === "warning") {
-    osc.type = "square";
-    osc.frequency.setValueAtTime(200, now);
-    osc.frequency.linearRampToValueAtTime(150, now + 0.2);
-    gain.gain.setValueAtTime(0.1, now);
-    gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
-    osc.start(now);
-    osc.stop(now + 0.2);
   } else if (type === "flip") {
     osc.type = "sine";
     osc.frequency.setValueAtTime(200, now);
@@ -208,7 +201,7 @@ export default function Home() {
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(0);
 
-  // Telemetry (Time Tracking)
+  // Telemetry
   const [quizStartTime, setQuizStartTime] = useState<number>(0);
   const [studyTimeSeconds, setStudyTimeSeconds] = useState<number>(0);
 
@@ -233,61 +226,6 @@ export default function Home() {
     if (storedKey) setApiKey(storedKey);
   }, []);
 
-  // --- KEYBOARD LISTENERS ---
-
-  // Quiz Keyboard Shortcuts
-  useEffect(() => {
-    if (view === "QUIZ" && !isAnswered && !showExitConfirm) {
-      const handleKeyDown = (e: KeyboardEvent) => {
-        const q = questions[currentQ];
-        if (q?.type === "mcq" || q?.type === "tf") {
-          const index = parseInt(e.key) - 1;
-          if (!isNaN(index) && index >= 0 && index < q.options.length) {
-            handleOptionSelect(q.options[index]);
-          }
-        }
-        if (e.key === "Enter" && q?.type === "fib" && textAnswer)
-          submitAnswer(textAnswer);
-      };
-      window.addEventListener("keydown", handleKeyDown);
-      return () => window.removeEventListener("keydown", handleKeyDown);
-    } else if (view === "QUIZ" && isAnswered && !showExitConfirm) {
-      const handleNext = (e: KeyboardEvent) => {
-        if (e.key === "Enter") nextQuestion();
-      };
-      window.addEventListener("keydown", handleNext);
-      return () => window.removeEventListener("keydown", handleNext);
-    }
-  }, [view, isAnswered, currentQ, textAnswer, questions, showExitConfirm]);
-
-  // Flashcard Keyboard Shortcuts
-  useEffect(() => {
-    if (view === "FLASHCARDS") {
-      const handleFlashcardKeys = (e: KeyboardEvent) => {
-        if (e.key === "ArrowRight") {
-          setIsFlipped(false);
-          if (currentQ < questions.length - 1) setCurrentQ((c) => c + 1);
-          else setView("RESULTS");
-        }
-        if (e.key === "ArrowLeft") {
-          setIsFlipped(false);
-          if (currentQ > 0) setCurrentQ((c) => c - 1);
-        }
-        if (e.key === " " || e.key === "Enter") {
-          e.preventDefault(); // Stop page scroll on spacebar
-          triggerFeedback("flip");
-          setIsFlipped((f) => !f);
-        }
-        if (e.key === "Escape") {
-          triggerFeedback("click");
-          setView("RESULTS");
-        }
-      };
-      window.addEventListener("keydown", handleFlashcardKeys);
-      return () => window.removeEventListener("keydown", handleFlashcardKeys);
-    }
-  }, [view, currentQ, questions.length]);
-
   // Timer
   useEffect(() => {
     if (view === "QUIZ" && isMockMode && timeLeft > 0 && !showExitConfirm) {
@@ -296,7 +234,7 @@ export default function Home() {
     } else if (timeLeft === 0 && isMockMode && view === "QUIZ") finishQuiz();
   }, [timeLeft, view, isMockMode, showExitConfirm]);
 
-  // --- FORMATTERS ---
+  // Format Timer
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -364,7 +302,7 @@ export default function Home() {
     setSelectedOption(null);
     setTextAnswer("");
     setShowExitConfirm(false);
-    setQuizStartTime(Date.now()); // Start Telemetry
+    setQuizStartTime(Date.now());
     if (isMockMode) setTimeLeft(count * 60);
   };
 
@@ -392,13 +330,16 @@ export default function Home() {
   };
 
   const handleOptionSelect = (option: string) => {
-    if (isAnswered) return;
+    if (isAnswered && !isMockMode) return; // Prevent changing in normal mode after answered
+
     triggerFeedback("click");
     setSelectedOption(option);
 
+    // In Normal Mode -> Submit Immediately
     if (!isMockMode) {
       submitAnswer(option);
     }
+    // In Mock Mode -> Just highlight, wait for manual submit
   };
 
   const submitAnswer = (finalAnswer: string | null) => {
@@ -455,7 +396,6 @@ export default function Home() {
   };
 
   const finishQuiz = () => {
-    // End Telemetry
     const endTime = Date.now();
     const elapsedSeconds = Math.floor((endTime - quizStartTime) / 1000);
     setStudyTimeSeconds(elapsedSeconds);
@@ -524,7 +464,7 @@ export default function Home() {
 
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(14);
-    doc.text(`Final Score: ${score} / ${questions.length}`, 14, 55);
+    doc.text(`Final Score: ${score} / ${questions.length}`, 14, 60);
 
     const tableData = validHistory.map((h, i) => [
       i + 1,
@@ -564,7 +504,7 @@ export default function Home() {
           <motion.div
             animate={{ scale: [1, 1.1, 1], rotate: 360 }}
             transition={{ duration: 3, ease: "easeInOut", repeat: Infinity }}
-            className="w-20 h-20 border-4 border-zinc-100 border-t-black rounded-full mb-8 shadow-xl"
+            className="w-16 h-16 border-4 border-zinc-100 border-t-black rounded-full mb-8 shadow-xl"
           />
           <h2 className="text-xl font-black tracking-tighter text-black uppercase animate-pulse">
             {loadingStep}
@@ -925,18 +865,14 @@ export default function Home() {
                   <button
                     key={i}
                     onClick={() => handleOptionSelect(opt)}
-                    disabled={isAnswered && !isMockMode}
+                    disabled={isAnswered && !isMockMode} // Disabled only if answered AND Normal Mode
                     className={`w-full text-left p-5 rounded-2xl text-base md:text-lg font-bold border-2 transition-all active:scale-[0.98] duration-200 group ${
-                      isAnswered
-                        ? isMockMode
-                          ? selectedOption === opt
-                            ? "bg-black text-white border-black"
+                      isAnswered && !isMockMode
+                        ? opt === q.answer
+                          ? "bg-black text-white border-black"
+                          : selectedOption === opt
+                            ? "bg-white border-red-500 text-red-500"
                             : "bg-white border-zinc-100 opacity-50"
-                          : opt === q.answer
-                            ? "bg-black text-white border-black"
-                            : selectedOption === opt
-                              ? "bg-white border-zinc-200 text-zinc-300 line-through"
-                              : "opacity-30 border-transparent"
                         : selectedOption === opt
                           ? "bg-black text-white border-black"
                           : "bg-white border-zinc-100 hover:border-black"
@@ -945,14 +881,14 @@ export default function Home() {
                     <div className="flex items-start gap-4">
                       <div
                         className={`mt-0.5 min-w-[24px] h-6 rounded-md flex items-center justify-center text-[10px] font-bold border transition-colors ${
-                          isAnswered
-                            ? isMockMode && selectedOption === opt
-                              ? "bg-white text-black"
-                              : opt === q.answer
-                                ? "bg-white text-black border-white"
+                          isAnswered && !isMockMode
+                            ? opt === q.answer
+                              ? "bg-white text-black border-white"
+                              : selectedOption === opt
+                                ? "bg-red-100 border-red-500 text-red-500"
                                 : "bg-zinc-100 border-zinc-200 text-zinc-400"
                             : selectedOption === opt
-                              ? "bg-white text-black border-white"
+                              ? "bg-white text-black"
                               : "bg-zinc-50 border-zinc-200 text-zinc-400 group-hover:bg-black group-hover:text-white group-hover:border-black"
                         }`}
                       >
@@ -967,7 +903,8 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-lg border-t border-zinc-100 p-6 z-30 pb-8 md:pb-6">
+        {/* Bottom Sticky Action Area */}
+        <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-lg border-t border-zinc-100 p-6 z-30 pb-8 md:pb-6 safe-area-pb">
           <div className="max-w-xl mx-auto">
             {isAnswered && !isMockMode ? (
               <motion.div
@@ -1111,7 +1048,7 @@ export default function Home() {
 
             {/* BACK */}
             <div
-              className="absolute inset-0 bg-white text-black rounded-[32px] p-8 flex flex-col items-center justify-center text-center shadow-2xl"
+              className="absolute inset-0 bg-white text-black rounded-[32px] p-8 flex flex-col items-center justify-center text-center shadow-2xl overflow-hidden"
               style={{
                 backfaceVisibility: "hidden",
                 WebkitBackfaceVisibility: "hidden",
@@ -1121,12 +1058,14 @@ export default function Home() {
               <span className="text-zinc-400 font-black uppercase tracking-widest text-[10px] mb-6 tracking-[0.2em]">
                 Answer
               </span>
-              <h2 className="text-3xl font-black leading-tight mb-6">
-                {q.answer}
-              </h2>
-              <p className="text-sm text-zinc-600 font-medium leading-relaxed overflow-y-auto max-h-[40%] custom-scrollbar">
-                {q.simple_explanation}
-              </p>
+              <div className="w-full h-full flex flex-col items-center justify-center overflow-y-auto no-scrollbar">
+                <h2 className="text-3xl font-black leading-tight mb-6">
+                  {q.answer}
+                </h2>
+                <p className="text-sm text-zinc-600 font-medium leading-relaxed">
+                  {q.simple_explanation}
+                </p>
+              </div>
             </div>
           </motion.div>
         </div>
@@ -1174,7 +1113,7 @@ export default function Home() {
       <div className="min-h-screen bg-white text-black flex items-center justify-center p-6 font-sans relative overflow-x-hidden">
         <NoiseOverlay />
 
-        {/* Hidden Share Card Render Target (Off-screen but rendered) */}
+        {/* Hidden Share Card Render Target */}
         <div
           style={{
             position: "fixed",
