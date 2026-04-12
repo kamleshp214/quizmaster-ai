@@ -80,7 +80,9 @@ export async function generateQuizQuestionsOpenAI(
         { role: "system", content: "You are a backend JSON API. Return only valid JSON." },
         { role: "user", content: prompt }
       ],
-      model: "llama-3.1-8b-instant",
+    // ✅ NEW (working) — best replacement, same capability
+model: "llama-3.3-70b-versatile"
+
       temperature: 0.3, // Slightly higher for creativity in questions, but logic is constrained by prompt
     });
 
