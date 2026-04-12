@@ -1,8 +1,6 @@
 import OpenAI from "openai";
-
 export type QuizType = "mcq" | "tf" | "fib" | "mix";
 export type Difficulty = "easy" | "normal" | "hard";
-
 export interface QuizResponse {
   subject: string;
   questions: {
@@ -14,7 +12,6 @@ export interface QuizResponse {
     type: "mcq" | "tf" | "fib";
   }[];
 }
-
 export async function generateQuizQuestionsOpenAI(
   text: string, 
   apiKey: string, 
@@ -28,7 +25,6 @@ export async function generateQuizQuestionsOpenAI(
     dangerouslyAllowBrowser: true 
   });
 
-  // Dynamic Prompt Construction based on User Selection
   let formatRules = "";
   if (type === "mcq") {
     formatRules = `- Strictly generate Multiple Choice Questions (MCQ).
@@ -54,7 +50,6 @@ export async function generateQuizQuestionsOpenAI(
     - "answer" must be the exact string value from the options (or the correct text for FIB).
     - "simple_explanation" must be a simplified, child-friendly version of the academic "explanation".
     - Do NOT include conversational text. Output ONLY the JSON object.
-
     JSON Schema:
     {
       "subject": "Topic Name",
@@ -69,7 +64,6 @@ export async function generateQuizQuestionsOpenAI(
         }
       ]
     }
-
     CONTENT TO ANALYZE:
     ${text.substring(0, 25000)}
   `;
@@ -80,15 +74,11 @@ export async function generateQuizQuestionsOpenAI(
         { role: "system", content: "You are a backend JSON API. Return only valid JSON." },
         { role: "user", content: prompt }
       ],
-    // ✅ NEW (working) — best replacement, same capability
-model: "llama-3.3-70b-versatile"
-
-      temperature: 0.3, // Slightly higher for creativity in questions, but logic is constrained by prompt
+      model: "llama-3.3-70b-versatile", // ✅ Fixed: was deprecated model, now has correct comma
+      temperature: 0.3,
     });
 
     let raw = completion.choices[0].message.content || "";
-
-    // 🧹 SANITIZER: Robust JSON Extraction
     raw = raw.replace(/```json/g, "").replace(/```/g, "");
     const firstBrace = raw.indexOf("{");
     const lastBrace = raw.lastIndexOf("}");
@@ -99,12 +89,10 @@ model: "llama-3.3-70b-versatile"
 
     const parsed = JSON.parse(raw);
     
-    // 🛡️ Data Normalization Guard
     return {
       subject: parsed.subject || "General Knowledge",
       questions: parsed.questions.map((q: any) => ({
         question: q.question,
-        // Enforce True/False options if the type is TF, regardless of what AI generated
         options: q.type === 'tf' || type === 'tf' ? ["True", "False"] : (q.options || []),
         answer: q.answer.toString().trim(),
         explanation: q.explanation || "No explanation provided.",
@@ -112,7 +100,6 @@ model: "llama-3.3-70b-versatile"
         type: (type === 'mix' ? q.type : type).toLowerCase()
       }))
     };
-
   } catch (error) {
     console.error("Groq Generation Error:", error);
     throw new Error("Failed to generate quiz. The content might be too complex or the AI is busy. Please try again.");
