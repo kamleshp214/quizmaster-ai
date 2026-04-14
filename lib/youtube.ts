@@ -1,8 +1,9 @@
 /**
  * lib/youtube.ts
- * 
- * Fetches YouTube transcripts without any npm package.
- * Uses native fetch with real browser headers — works on Vercel serverless.
+ *
+ * Uses YouTube's internal InnerTube API (/youtubei/v1/player) to fetch
+ * transcripts. This approach works from Vercel serverless — HTML scraping
+ * gets blocked by YouTube, but this POST API does not.
  */
 
 // ─── Extract video ID from any YouTube URL format ────────────────────────────
@@ -21,54 +22,63 @@ export function extractYouTubeVideoId(url: string): string | null {
   return null;
 }
 
-// ─── Fetch YouTube page and parse ytInitialPlayerResponse ────────────────────
-async function fetchPlayerResponse(videoId: string): Promise<any> {
-  const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Accept":
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    },
-  });
+// ─── Fetch player response via InnerTube API ─────────────────────────────────
+// This POST API is what YouTube's own web client uses internally.
+// It returns the full player response including caption track URLs.
+async function fetchPlayerResponseInnerTube(videoId: string): Promise<any> {
+  const response = await fetch(
+    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "X-YouTube-Client-Name": "1",
+        "X-YouTube-Client-Version": "2.20240101.00.00",
+        "Origin": "https://www.youtube.com",
+        "Referer": `https://www.youtube.com/watch?v=${videoId}`,
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20240101.00.00",
+            hl: "en",
+            gl: "US",
+          },
+        },
+        videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
+      }),
+    }
+  );
 
   if (!response.ok) {
     throw new Error(
-      `YouTube returned status ${response.status}. The video may be private or unavailable.`
+      `YouTube InnerTube API returned ${response.status}. The video may be unavailable.`
     );
   }
 
-  const html = await response.text();
-
-  // Extract the JSON blob YouTube embeds in every watch page
-  const match = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;/s);
-  if (!match) {
-    throw new Error(
-      "Could not parse YouTube player data. Try a different video."
-    );
-  }
-
-  try {
-    return JSON.parse(match[1]);
-  } catch {
-    throw new Error("Failed to parse YouTube player response JSON.");
-  }
+  return response.json();
 }
 
-// ─── Pick the best available caption track (prefers English) ─────────────────
+// ─── Pick the best available caption track ───────────────────────────────────
 function extractCaptionUrl(playerResponse: any): string | null {
   try {
-    const captionTracks =
+    const tracks =
       playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-    if (!captionTracks || captionTracks.length === 0) return null;
+    if (!tracks || tracks.length === 0) return null;
 
+    // Prefer manually added English, then auto-generated English, then any
     const preferred = ["en", "en-US", "en-GB"];
     const track =
-      captionTracks.find((t: any) => preferred.includes(t.languageCode)) ||
-      captionTracks.find((t: any) => t.languageCode?.startsWith("en")) ||
-      captionTracks[0];
+      tracks.find((t: any) => preferred.includes(t.languageCode) && t.kind !== "asr") ||
+      tracks.find((t: any) => preferred.includes(t.languageCode)) ||
+      tracks.find((t: any) => t.languageCode?.startsWith("en")) ||
+      tracks[0];
 
     return track?.baseUrl ?? null;
   } catch {
@@ -76,7 +86,7 @@ function extractCaptionUrl(playerResponse: any): string | null {
   }
 }
 
-// ─── Fetch caption JSON and convert to plain text ────────────────────────────
+// ─── Fetch caption JSON3 and convert to plain text ───────────────────────────
 async function fetchAndParseCaptions(captionUrl: string): Promise<string> {
   const response = await fetch(captionUrl + "&fmt=json3", {
     headers: {
@@ -86,7 +96,7 @@ async function fetchAndParseCaptions(captionUrl: string): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error("Failed to download caption data from YouTube.");
+    throw new Error(`Failed to download captions (status ${response.status}).`);
   }
 
   const data = await response.json();
@@ -108,57 +118,61 @@ async function fetchAndParseCaptions(captionUrl: string): Promise<string> {
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 export async function getYoutubeTranscript(url: string): Promise<string> {
-  // 1. Validate and extract video ID
+  // 1. Extract video ID
   const videoId = extractYouTubeVideoId(url);
   if (!videoId) {
     throw new Error(
-      "Invalid YouTube URL. Supported formats:\n" +
-        "• youtube.com/watch?v=...\n" +
-        "• youtu.be/...\n" +
-        "• youtube.com/shorts/..."
+      "Invalid YouTube URL. Supported formats: youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/..."
     );
   }
 
-  // 2. Fetch player response from YouTube
+  // 2. Call InnerTube API for player response
   let playerResponse: any;
   try {
-    playerResponse = await fetchPlayerResponse(videoId);
+    playerResponse = await fetchPlayerResponseInnerTube(videoId);
   } catch (err: any) {
-    throw new Error(`Could not load YouTube video: ${err.message}`);
+    throw new Error(`Could not contact YouTube: ${err.message}`);
   }
 
-  // 3. Check playability
+  // 3. Check playability status
   const status = playerResponse?.playabilityStatus?.status;
+  const reason = playerResponse?.playabilityStatus?.reason ?? "";
+
   if (status === "LOGIN_REQUIRED") {
     throw new Error(
       "This video is age-restricted or requires sign-in. Please use a different video."
     );
   }
   if (status === "UNPLAYABLE" || status === "ERROR") {
-    throw new Error("This video is unavailable or has been removed.");
+    throw new Error(
+      `This video is unavailable: ${reason || "unknown reason"}.`
+    );
   }
   if (status === "PRIVATE_VIDEO") {
     throw new Error("This video is private. Please use a public video.");
   }
+  if (status === "LIVE_STREAM_OFFLINE") {
+    throw new Error("This is a live stream. Please use a regular video.");
+  }
 
-  // 4. Get caption URL
+  // 4. Get caption URL from response
   const captionUrl = extractCaptionUrl(playerResponse);
   if (!captionUrl) {
     const title =
       playerResponse?.videoDetails?.title ?? `Video ID: ${videoId}`;
     throw new Error(
-      `No captions found for "${title}".\n` +
-        `Please use a video with English captions enabled.\n` +
-        `Tip: Educational videos, TED Talks, and most popular channels have auto-generated captions.`
+      `No captions found for "${title}". ` +
+      `Please use a video that has English captions or auto-generated subtitles. ` +
+      `Tip: Most educational videos, TED Talks, and popular YouTube channels have auto-generated captions.`
     );
   }
 
-  // 5. Fetch and parse transcript text
+  // 5. Fetch and parse transcript
   let transcript: string;
   try {
     transcript = await fetchAndParseCaptions(captionUrl);
   } catch (err: any) {
-    throw new Error(`Could not fetch transcript: ${err.message}`);
+    throw new Error(`Could not fetch transcript text: ${err.message}`);
   }
 
   if (!transcript || transcript.length < 50) {
